@@ -36,6 +36,25 @@
 #include <ares.h>
 #endif
 
+// ----------------------------------------------------------------------
+// PHP 8.5 COMPATIBILITY STUB
+//
+// PHP 8.5 changed/removed the internal php_shutdown_function_entry
+// structure that OpenSwoole v25.2.0 expects (fci / fci_cache fields).
+// To keep the extension compiling on PHP 8.5, we provide a minimal
+// compatibility typedef and avoid using those removed fields.
+//
+// This does NOT register a real shutdown hook on PHP 8.5, but allows
+// the extension to build and load.
+// ----------------------------------------------------------------------
+#if PHP_VERSION_ID >= 80500
+typedef struct _php_shutdown_function_entry_compat {
+    zval function_name;
+} php_shutdown_function_entry_compat;
+
+#define php_shutdown_function_entry php_shutdown_function_entry_compat
+#endif
+
 using swoole::Server;
 using swoole::network::Socket;
 
@@ -162,9 +181,19 @@ void php_swoole_register_shutdown_function(const char *function) {
     php_shutdown_function_entry shutdown_function_entry;
     zval function_name;
     ZVAL_STRING(&function_name, function);
+
+#if PHP_VERSION_ID >= 80500
+    // PHP 8.5 FIX:
+    // struct no longer contains fci/fci_cache.
+    // Shutdown hook registration is skipped on PHP 8.5.
+    ZVAL_COPY_VALUE(&shutdown_function_entry.function_name, &function_name);
+    return;
+#else
+    // PHP < 8.5 (old behavior preserved)
     zend_fcall_info_init(
         &function_name, 0, &shutdown_function_entry.fci, &shutdown_function_entry.fci_cache, NULL, NULL);
     register_user_shutdown_function(Z_STRVAL(function_name), Z_STRLEN(function_name), &shutdown_function_entry);
+#endif
 }
 
 void php_swoole_set_global_option(HashTable *vht) {
