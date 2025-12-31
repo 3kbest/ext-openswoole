@@ -159,12 +159,45 @@ static void php_swoole_init_globals(zend_openswoole_globals *openswoole_globals)
 }
 
 void php_swoole_register_shutdown_function(const char *function) {
+    size_t function_len = strlen(function);
+    zval callable;
+    ZVAL_STRINGL(&callable, function, function_len);
+
+#if PHP_VERSION_ID >= 80500
+    // PHP 8.5+: php_shutdown_function_entry no longer contains zend_fcall_info.
+    // It stores only a zend_fcall_info_cache and an optional params array.
+    zend_fcall_info fci;
+    php_shutdown_function_entry entry;
+    entry.fci_cache = empty_fcall_info_cache;
+    entry.params = nullptr;
+    entry.param_count = 0;
+
+    if (zend_fcall_info_init(&callable, 0, &fci, &entry.fci_cache, NULL, NULL) != SUCCESS) {
+        zval_ptr_dtor(&callable);
+        return;
+    }
+
+    // Match PHP's own register_shutdown_function(): the stored fci_cache must be addref'd.
+    zend_fcc_addref(&entry.fci_cache);
+
+    register_user_shutdown_function(function, function_len, &entry);
+#else
+    // PHP <= 8.4
     php_shutdown_function_entry shutdown_function_entry;
-    zval function_name;
-    ZVAL_STRING(&function_name, function);
-    zend_fcall_info_init(
-        &function_name, 0, &shutdown_function_entry.fci, &shutdown_function_entry.fci_cache, NULL, NULL);
-    register_user_shutdown_function(Z_STRVAL(function_name), Z_STRLEN(function_name), &shutdown_function_entry);
+    memset(&shutdown_function_entry, 0, sizeof(shutdown_function_entry));
+
+    if (zend_fcall_info_init(&callable, 0, &shutdown_function_entry.fci, &shutdown_function_entry.fci_cache, NULL, NULL) != SUCCESS) {
+        zval_ptr_dtor(&callable);
+        return;
+    }
+
+    // Safe even for string callables; required if this ever becomes an object/array callable.
+    zend_fcc_addref(&shutdown_function_entry.fci_cache);
+
+    register_user_shutdown_function(function, function_len, &shutdown_function_entry);
+#endif
+
+    zval_ptr_dtor(&callable);
 }
 
 void php_swoole_set_global_option(HashTable *vht) {
