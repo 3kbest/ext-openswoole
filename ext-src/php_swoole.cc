@@ -159,12 +159,43 @@ static void php_swoole_init_globals(zend_openswoole_globals *openswoole_globals)
 }
 
 void php_swoole_register_shutdown_function(const char *function) {
+#if PHP_VERSION_ID >= 80500
+    // PHP 8.5+: php_shutdown_function_entry no longer contains zend_fcall_info (fci).
+    // It stores a zend_fcall_info_cache plus optional params. Build the entry using a
+    // temporary zend_fcall_info, then store the resolved callable in fci_cache and
+    // addref it (matching PHP's own register_shutdown_function() behavior). Without
+    // the addref, the stored fci_cache references a freed callable when the shutdown
+    // chain executes — observed as worker SIGSEGV ~1 s after each connect on aarch64
+    // (Gambinomafia Bug #524 / Bug #486 sister: third native crash path beyond
+    // SWOOLE_TRACE_ALL and synchronous Redis writes from many coroutines).
+    php_shutdown_function_entry shutdown_function_entry;
+    zend_fcall_info fci;
+    zval function_name;
+
+    ZVAL_STRING(&function_name, function);
+
+    shutdown_function_entry.fci_cache = empty_fcall_info_cache;
+    shutdown_function_entry.params = nullptr;
+    shutdown_function_entry.param_count = 0;
+
+    if (zend_fcall_info_init(&function_name, 0, &fci, &shutdown_function_entry.fci_cache, NULL, NULL) != SUCCESS) {
+        zval_ptr_dtor(&function_name);
+        return;
+    }
+
+    zend_fcc_addref(&shutdown_function_entry.fci_cache);
+
+    register_user_shutdown_function(Z_STRVAL(function_name), Z_STRLEN(function_name), &shutdown_function_entry);
+
+    zval_ptr_dtor(&function_name);
+#else
     php_shutdown_function_entry shutdown_function_entry;
     zval function_name;
     ZVAL_STRING(&function_name, function);
     zend_fcall_info_init(
         &function_name, 0, &shutdown_function_entry.fci, &shutdown_function_entry.fci_cache, NULL, NULL);
     register_user_shutdown_function(Z_STRVAL(function_name), Z_STRLEN(function_name), &shutdown_function_entry);
+#endif
 }
 
 void php_swoole_set_global_option(HashTable *vht) {
