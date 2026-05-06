@@ -567,10 +567,23 @@ void PHPCoroutine::restore_task(PHPContext *task) {
 void PHPCoroutine::on_yield(void *arg) {
     PHPContext *task = (PHPContext *) arg;
     PHPContext *origin_task = get_origin_context(task);
-    openswoole_trace_log(
-        OSW_TRACE_COROUTINE, "php_coro_yield from cid=%ld to cid=%ld", task->co->get_cid(), task->co->get_origin_cid());
+#ifdef OSW_LOG_TRACE_OPEN
+    // Capture cids before save/restore so the trace message remains correct
+    // after the executor swap below. Fixes a SIGSEGV observed on aarch64 +
+    // PHP 8.5 + JIT when SWOOLE_TRACE_ALL is enabled: the trace_log call ran
+    // before save_task(), which left a window where EG(current_execute_data)
+    // and the captured CV slots still belonged to the yielding coroutine
+    // while __SW_FUNC__'s std::string allocations and Logger::put's
+    // flock+write syscalls executed. The window was wide enough to corrupt
+    // captured zvals consumed by the next ZEND_BIND_LEXICAL opcode
+    // (zend_gc_addref crash on p=0xc). on_resume already does the swap first
+    // and logs after — this aligns on_yield with the same order.
+    long from_cid = task->co->get_cid();
+    long to_cid = task->co->get_origin_cid();
+#endif
     save_task(task);
     restore_task(origin_task);
+    openswoole_trace_log(OSW_TRACE_COROUTINE, "php_coro_yield from cid=%ld to cid=%ld", from_cid, to_cid);
 }
 
 void PHPCoroutine::on_resume(void *arg) {
